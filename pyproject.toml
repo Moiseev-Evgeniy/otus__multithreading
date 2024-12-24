@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "otus-multithreading"
+version = "0.1.0"
+description = ""
+authors = ["Евгений <evgeniy.moiseev.progr@mail.ru>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.13"
+memcache = "^0.12.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
