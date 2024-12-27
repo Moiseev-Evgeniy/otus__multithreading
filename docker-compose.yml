@@ -1,0 +1,49 @@
+version: '3.7'
+
+services:
+    redis_1:
+        image: redis:latest
+        container_name: redis_1
+        restart: unless-stopped
+        ports:
+            - "6380:6379"
+    redis_2:
+        image: redis:latest
+        container_name: redis_2
+        restart: unless-stopped
+        ports:
+            - "6381:6379"
+    redis_3:
+        image: redis:latest
+        container_name: redis_3
+        restart: unless-stopped
+        ports:
+            - "6382:6379"
+    redis_4:
+        image: redis:latest
+        container_name: redis_4
+        restart: unless-stopped
+        ports:
+            - "6383:6379"
+
+#services:
+#  memcached1:
+#    image: bitnami/memcached:latest
+#    restart: always
+#    ports:
+#    - "11211:33013"
+#  memcached2:
+#    image: bitnami/memcached:latest
+#    restart: always
+#    ports:
+#    - "11212:33014"
+#  memcached3:
+#    image: bitnami/memcached:latest
+#    restart: always
+#    ports:
+#    - "11213:33015"
+#  memcached4:
+#    image: bitnami/memcached:latest
+#    restart: always
+#    ports:
+#    - "11214:33016"
