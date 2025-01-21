@@ -1,5 +1,3 @@
-import asyncio
-
 from pymemcache.client import base
 from redis.client import Redis
 from redis.backoff import ExponentialBackoff
@@ -39,6 +37,14 @@ class StorageManager:
     @classmethod
     def set(cls, addr: str, key: str, value: str) -> None:
         cls.get_client(addr).set(key, value)
+
+    @classmethod
+    def set_many(cls, addr: str, data: dict[str, str]) -> None:
+        client = cls.get_client(addr)
+        if hasattr(client, "mset"):
+            client.mset(data)
+        elif hasattr(client, "set_many"):
+            client.set_many(data)
 
     @classmethod
     def get(cls, addr: str, key: str) -> str:

@@ -1,97 +1,69 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-import threading
 import os
-import gzip
 import sys
 import glob
 import logging
 import collections
+from concurrent.futures import ThreadPoolExecutor
 from optparse import OptionParser
 import appsinstalled_pb2
 
 from storage_client import StorageManager
 
+BATCH_SIZE = 100_000
 NORMAL_ERR_RATE = 0.01
 AppsInstalled = collections.namedtuple("AppsInstalled", ["dev_type", "dev_id", "lat", "lon", "apps"])
 
 
-def dot_rename(path):
+def dot_rename(path) -> None:
     head, fn = os.path.split(path)
     # atomic in most cases
     os.rename(path, os.path.join(head, "." + fn))
 
 
-def insert_appsinstalled(addr, appsinstalled, dry_run=False):
+def prepare_data(appsinstalled: AppsInstalled) -> dict[str, str]:
     ua = appsinstalled_pb2.UserApps()
     ua.lat = appsinstalled.lat
     ua.lon = appsinstalled.lon
-    key = f"{appsinstalled.dev_type}:{appsinstalled.dev_id}"
     ua.apps.extend(appsinstalled.apps)
-    packed = ua.SerializeToString()
-
-    try:
-        if dry_run:
-            logging.debug(f"{addr} - {key} -> {str(ua).replace("\n", " ")}")
-        else:
-            StorageManager.set(addr, key, packed)
-    except Exception as e:
-        logging.exception(f"Cannot write to storage {addr}: {e}")
-        return False
-    return True
+    return {f"{appsinstalled.dev_type}:{appsinstalled.dev_id}": ua.SerializeToString()}
 
 
-def parse_appsinstalled(line):
+def insert_appsinstalled(addr: str, data: dict[str, str], thread_executor: ThreadPoolExecutor, dry_run=False) -> bool:
+    if dry_run:
+        logging.debug(f"Insert {len(data)} data items.")
+    else:
+        try:
+            future = thread_executor.submit(StorageManager.set_many, addr, data)
+            future.result(timeout=3)
+        except Exception as e:
+            logging.exception(f"Cannot write to storage {addr}: {e}")
+            return False
+        return True
+
+
+def parse_appsinstalled(line) -> AppsInstalled | None:
+
     line_parts = line.strip().split("\t")
     if len(line_parts) < 5:
         return
+
     dev_type, dev_id, lat, lon, raw_apps = line_parts
     if not dev_type or not dev_id:
         return
+
     try:
         apps = [int(a.strip()) for a in raw_apps.split(",")]
     except ValueError:
         apps = [int(a.strip()) for a in raw_apps.split(",") if a.isidigit()]
         logging.info(f"Not all user apps are digits: `{line}`")
+
     try:
         lat, lon = float(lat), float(lon)
     except ValueError:
         logging.info(f"Invalid geo coords: `{line}`")
+        return
+
     return AppsInstalled(dev_type, dev_id, lat, lon, apps)
-
-
-def main_process(device_storage: dict, fn: str, options):
-    processed = errors = 0
-    logging.info(f'Processing {fn}')
-
-    with open(fn) as fd:
-        for line in fd:
-
-            if not (line := line.strip()):
-                continue
-
-            if not (appsinstalled := parse_appsinstalled(line)):
-                errors += 1
-                continue
-
-            if not (storage_addr := device_storage.get(appsinstalled.dev_type)):
-                errors += 1
-                logging.error(f"Unknown device type: {appsinstalled.dev_type}")
-                continue
-
-            ok = insert_appsinstalled(storage_addr, appsinstalled, options.dry)
-            if ok:
-                processed += 1
-            else:
-                errors += 1
-
-    dot_rename(fn)
-
-    err_rate = float(errors) / processed if processed else 1
-    if err_rate < NORMAL_ERR_RATE:
-        logging.info(f"Acceptable error rate ({err_rate}). Successfull load")
-    else:
-        logging.error(f"High error rate ({err_rate} > {NORMAL_ERR_RATE}). Failed load")
 
 
 def main(options):
@@ -102,10 +74,53 @@ def main(options):
         "dvid": options.dvid,
     }
 
-    for fn in glob.iglob(options.pattern):
-        thread = threading.Thread(target=main_process, args=(device_storage, fn, options))
-        thread.start()
-        # main_process(device_storage, fn, options)
+    with ThreadPoolExecutor() as thread_executor:
+        for fn in glob.iglob(options.pattern):
+            logging.info(f'Processing {fn}')
+            processed = errors = 0
+            data = {addr: dict() for addr in device_storage.values()}
+
+            with open(fn) as fd:
+                for line in fd:
+
+                    if not (line := line.strip()):
+                        continue
+
+                    if not (appsinstalled := parse_appsinstalled(line)):
+                        errors += 1
+                        continue
+
+                    if not (storage_addr := device_storage.get(appsinstalled.dev_type)):
+                        errors += 1
+                        logging.error(f"Unknown device type: {appsinstalled.dev_type}")
+                        continue
+
+                    data[storage_addr].update(prepare_data(appsinstalled))
+                    if (count := len(data[storage_addr])) >= BATCH_SIZE:
+                        ok = insert_appsinstalled(storage_addr, data[storage_addr], thread_executor, options.dry)
+                        if ok:
+                            processed += count
+                        else:
+                            errors += count
+
+                        data[storage_addr].clear()
+
+            for addr, values_dict in data.items():
+                if values_dict:
+                    ok = insert_appsinstalled(addr, values_dict, thread_executor, options.dry)
+                    if ok:
+                        processed += len(values_dict)
+                    else:
+                        errors += len(values_dict)
+
+            dot_rename(fn)
+
+            err_rate = float(errors) / processed if processed else 1
+            if err_rate < NORMAL_ERR_RATE:
+                logging.info(f"Acceptable error rate ({err_rate}). Successfull load")
+            else:
+                logging.error(f"High error rate ({err_rate} > {NORMAL_ERR_RATE}). Failed load")
+
 
 def prototest():
     sample = "idfa\t1rfw452y52g2gq4g\t55.55\t42.42\t1423,43,567,3,7,23\ngaid\t7rfw452y52g2gq4g\t55.55\t42.42\t7423,424"
